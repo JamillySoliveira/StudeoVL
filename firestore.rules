@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Função auxiliar para verificar se o usuário é administrador
+    function isAdmin() {
+      return request.auth != null && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        request.auth.token.email == 'adm.vlautomacao@gmail.com'
+      );
+    }
+
+    // Regra para usuários:
+    // - Leitura: aluno acessa seu perfil; admin visualiza todos
+    // - Criação: usuário autenticado só cria o próprio users/{uid}, como student e com accessEnabled: false
+    // - Atualização: somente admin altera role, accessEnabled, courseAccess e enrolledCourses
+    // - Exclusão: somente admin
+    match /users/{userId} {
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      
+      allow create: if request.auth != null && (
+        isAdmin() || (
+          request.auth.uid == userId &&
+          request.resource.data.uid == userId &&
+          request.resource.data.role == 'student' &&
+          request.resource.data.accessEnabled == false
+        )
+      );
+
+      allow update: if request.auth != null && (
+        isAdmin() || (
+          request.auth.uid == userId &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'role',
+            'accessEnabled',
+            'courseAccess',
+            'enrolledCourses'
+          ])
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+    
+    // Cursos, Módulos e Aulas: leitura permitida para todos autenticados, edição exclusiva para admin
+    match /courses/{courseId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /modules/{moduleId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /lessons/{lessonId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    // Aulas excluídas pelo administrador para persistência da exclusão
+    match /deletedLessons/{lessonId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    // Progresso do aluno: o aluno acessa seu progresso; admin pode auditar
+    match /progress/{progressId} {
+      allow read, write: if request.auth != null && (
+        resource == null || resource.data.userId == request.auth.uid || request.resource.data.userId == request.auth.uid || isAdmin()
+      );
+    }
+  }
+}

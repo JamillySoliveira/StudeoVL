@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "users": {
+      "title": "users",
+      "description": "Perfis dos alunos cadastrados na plataforma",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "courseAccess": {
+          "type": "object"
+        },
+        "enrolledCourses": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "accessEnabled": { "type": "boolean" }
+      },
+      "required": ["uid", "email"]
+    },
+    "courses": {
+      "title": "courses",
+      "description": "Cursos disponíveis",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "coverUrl": { "type": "string" },
+        "totalLessons": { "type": "number" }
+      },
+      "required": ["title"]
+    },
+    "modules": {
+      "title": "modules",
+      "description": "Módulos do curso",
+      "type": "object",
+      "properties": {
+        "courseId": { "type": "string" },
+        "title": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["courseId", "title", "order"]
+    },
+    "lessons": {
+      "title": "lessons",
+      "description": "Aulas do curso com links do YouTube/Google Drive e Google Forms",
+      "type": "object",
+      "properties": {
+        "courseId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "youtubeUrl": { "type": "string" },
+        "formUrl": { "type": "string" },
+        "order": { "type": "number" },
+        "duration": { "type": "string" },
+        "moduleId": { "type": "string" }
+      },
+      "required": ["courseId", "title", "order"]
+    },
+    "progress": {
+      "title": "progress",
+      "description": "Progresso das aulas concluídas pelo aluno",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "courseId": { "type": "string" },
+        "completedLessons": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "lastLessonId": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "courseId", "completedLessons"]
+    },
+    "deletedLessons": {
+      "title": "deletedLessons",
+      "description": "Registro de aulas excluídas pelo administrador para impedir a reconstrução a partir das aulas padrão",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "moduleId": { "type": "string" },
+        "deletedAt": { "type": "string" }
+      },
+      "required": ["id"]
+    }
+  }
+}
