@@ -51,6 +51,30 @@ interface LessonPlayerProps {
   onUpdateLessonVideoUrl?: (lessonId: string, videoUrl: string) => Promise<void>;
 }
 
+// Função auxiliar para garantir que links do Google Drive sejam incorporados via iframe (/preview)
+function resolveVideoEmbedUrl(url: string): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+
+  // Se for Google Drive, converte para o endpoint oficial de incorporação (/preview)
+  if (trimmed.includes("drive.google.com")) {
+    if (trimmed.includes("/preview")) {
+      return trimmed;
+    }
+    const fileIdMatch = trimmed.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (fileIdMatch && fileIdMatch[1]) {
+      return `https://drive.google.com/file/d/${fileIdMatch[1]}/preview`;
+    }
+    const paramIdMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (paramIdMatch && paramIdMatch[1]) {
+      return `https://drive.google.com/file/d/${paramIdMatch[1]}/preview`;
+    }
+  }
+
+  // Se não for Google Drive, mantém o comportamento atual
+  return getVideoEmbedUrl(trimmed);
+}
+
 // Subcomponente com key={currentLesson.id} para gerenciar o estado da edição sem useEffect
 function AdminVideoEditor({
   initialUrl,
@@ -190,11 +214,11 @@ export function LessonPlayer({
 
   // URL do vídeo (YouTube ou Google Drive) para embed em iframe (bloqueada para Aluno Demonstração)
   const videoSource = isDemo ? "" : (currentLesson.videoUrl || currentLesson.youtubeUrl || "");
-  const embedUrl = isDemo ? "" : getVideoEmbedUrl(videoSource);
+  const embedUrl = isDemo ? "" : resolveVideoEmbedUrl(videoSource);
   const currentNumber = String(currentLesson.order || currentIndex + 1).padStart(2, "0");
 
   return (
-    <div id="vl-lesson-player-page" className="max-w-4xl mx-auto space-y-5">
+    <div id="vl-lesson-player-page" className="max-w-4xl w-full mx-auto space-y-5 px-3 sm:px-4 md:px-0">
       {/* Botão de Voltar para a Grade do Curso e Gestão de Aula (Admin) */}
       <div className="flex items-center justify-between">
         <button
@@ -236,7 +260,7 @@ export function LessonPlayer({
       {/* ================= REPRODUTOR DE VÍDEO (GOOGLE DRIVE) ================= */}
       <div
         id="vl-video-container"
-        className="relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-lg border border-slate-800"
+        className="w-full mx-auto aspect-video min-h-[260px] sm:min-h-0 bg-slate-950 rounded-xl sm:rounded-2xl overflow-hidden shadow-lg border border-slate-800 relative"
       >
         {isDemo ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-900/95 text-white space-y-3">
@@ -266,8 +290,8 @@ export function LessonPlayer({
             key={embedUrl}
             src={embedUrl}
             title={currentLesson.title}
-            className="w-full h-full border-0"
-            allow="autoplay; encrypted-media; fullscreen"
+            className="w-full h-full border-0 block"
+            allow="autoplay; fullscreen; picture-in-picture"
             allowFullScreen
           />
         ) : (
