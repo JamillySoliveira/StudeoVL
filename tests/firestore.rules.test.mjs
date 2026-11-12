@@ -23,6 +23,8 @@ await env.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, "lessons/c1"), { courseId: "rControl-entrada-saida-analogica", title: "Controle" });
   await setDoc(doc(db, "lessons/c2"), { courseId: "rockwell-intermediario", title: "Controle antigo" });
   await setDoc(doc(db, "lessons/i1"), { courseId: "IHM-supervisorio", title: "IHM" });
+  await setDoc(doc(db, "notices/n1"), { courseId: "rockwell-basico", title: "Aviso", message: "Básico", createdAt: "2026-01-01" });
+  await setDoc(doc(db, "notices/n2"), { courseId: "IHM-supervisorio", title: "Aviso", message: "IHM", createdAt: "2026-01-01" });
   await setDoc(doc(db, "users/semcurso"), { uid: "semcurso", role: "student", accessEnabled: true });
   await setDoc(doc(db, "lessons/av1"), { courseId: "rockwell-avancado", title: "Aula avançada", videoUrl: "https://secreto" });
   await setDoc(doc(db, "lessons/leg1"), { courseId: "rockwell-controle-analogico-supervisorio", title: "Aula legada" });
@@ -102,6 +104,15 @@ await t("Novo aluno cria perfil bloqueado", assertSucceeds(setDoc(doc(env.authen
 await t("Aluno NÃO apaga o próprio perfil", assertFails(deleteDoc(doc(A, "users/alunoA"))));
 await t("Aluno NÃO grava em coleção desconhecida", assertFails(setDoc(doc(A, "qualquer/x"), { a: 1 })));
 await t("Aluno NÃO grava em deletedLessons", assertFails(setDoc(doc(A, "deletedLessons/l1"), { a: 1 })));
+await t("Aluno lê avisos do curso matriculado", assertSucceeds(getDocs(query(collection(A, "notices"), where("courseId", "in", ["rockwell-basico", "rockwell-controle-analogico-supervisorio"])))));
+await t("Aluno NÃO lê avisos de curso não comprado", assertFails(getDoc(doc(A, "notices/n2"))));
+await t("Aluno NÃO lista todos os avisos", assertFails(getDocs(collection(A, "notices"))));
+await t("Aluno NÃO publica aviso", assertFails(setDoc(doc(A, "notices/n3"), { courseId: "rockwell-basico", title: "x", message: "x" })));
+await t("Aluno NÃO apaga aviso", assertFails(deleteDoc(doc(A, "notices/n1"))));
+await t("Admin publica aviso", assertSucceeds(setDoc(doc(ADM, "notices/n4"), { courseId: "rockwell-basico", title: "Novo", message: "Oi", createdAt: "2026-01-02" })));
+await t("Admin NÃO publica aviso sem título", assertFails(setDoc(doc(ADM, "notices/n5"), { courseId: "rockwell-basico", title: "", message: "Oi" })));
+await t("Admin lista todos os avisos", assertSucceeds(getDocs(collection(ADM, "notices"))));
+await t("Admin apaga aviso", assertSucceeds(deleteDoc(doc(ADM, "notices/n4"))));
 await t("Aluno NÃO escreve aula", assertFails(setDoc(doc(A, "lessons/l2"), { title: "x" })));
 await t("Admin escreve aula", assertSucceeds(setDoc(doc(ADM, "lessons/l2"), { title: "x", courseId: "rockwell-basico" })));
 
