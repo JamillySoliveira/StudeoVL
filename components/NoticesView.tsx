@@ -10,14 +10,16 @@
  * aos cursos que ele possui liberados em seu perfil (`enrolledCourses`).
  */
 
-import React, { useState } from "react";
+import React from "react";
 import { Bell, ArrowRight } from "lucide-react";
-import { getStoredNotices, Notice } from "@/lib/constants";
+import { Notice } from "@/lib/constants";
 import { getUserAccessibleCourseIds, normalizeCourseId } from "@/lib/courseService";
+import { formatNoticeDate } from "@/lib/noticeService";
 import { UserProfile } from "@/lib/types";
 
 interface NoticesViewProps {
   user: UserProfile | null;
+  notices: Notice[];
   onGoToCourse: (courseId: string) => void;
 }
 
@@ -25,13 +27,12 @@ interface NoticesViewProps {
  * Visualização da aba Avisos da plataforma StudeoVL.
  * Exibe apenas comunicados relacionados aos cursos que o aluno possui em enrolledCourses.
  */
-export function NoticesView({ user, onGoToCourse }: NoticesViewProps) {
-  const [allNotices] = useState<Notice[]>(() => getStoredNotices());
+export function NoticesView({ user, notices, onGoToCourse }: NoticesViewProps) {
 
   const accessibleCourseIds = getUserAccessibleCourseIds(user);
 
   // Filtra apenas comunicados de cursos aos quais o aluno possui acesso oficial
-  const studentNotices: Notice[] = allNotices.filter((notice) =>
+  const studentNotices: Notice[] = notices.filter((notice) =>
     accessibleCourseIds.includes(normalizeCourseId(notice.courseId))
   );
 
@@ -64,7 +65,7 @@ export function NoticesView({ user, onGoToCourse }: NoticesViewProps) {
                     {notice.title}
                   </span>
                   <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                    {notice.date}
+                    {formatNoticeDate(notice)}
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm text-slate-800 dark:text-slate-200 font-medium leading-relaxed">
@@ -75,7 +76,7 @@ export function NoticesView({ user, onGoToCourse }: NoticesViewProps) {
               <div className="shrink-0">
                 <button
                   type="button"
-                  onClick={() => onGoToCourse(notice.courseId)}
+                  onClick={() => onGoToCourse(normalizeCourseId(notice.courseId))}
                   className="w-full sm:w-auto py-2 px-4 bg-slate-900 hover:bg-black dark:bg-slate-800 dark:hover:bg-slate-700 dark:border dark:border-slate-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
                 >
                   <span>Ver curso</span>
