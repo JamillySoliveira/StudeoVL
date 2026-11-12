@@ -33,7 +33,8 @@
 import React, { useEffect, useState, useTransition, useMemo, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import type { Query, DocumentReference } from "firebase/firestore";
+import { auth, db, doc, collection, onSnapshot, query, where } from "@/lib/firebase";
 import { UserProfile, Course, Lesson } from "@/lib/types";
 import { INITIAL_COURSE, INITIAL_COURSE_ID, AVAILABLE_COURSES } from "@/lib/courseData";
 import {
@@ -48,6 +49,9 @@ import {
 import {
   getCourseData,
   getAllCourses,
+  clearCourseCache,
+  getReadableCourseIds,
+  normalizeCourseId,
   saveLessonVideoUrl,
   checkUserCourseAccess,
   getUserAccessibleCourseIds,
@@ -216,28 +220,108 @@ export default function StudentApp() {
   // SINCRONIZAÇÃO DE DADOS COM O FIRESTORE (ALTA PERFORMANCE)
   // =====================================================================
 
-  // 1. Carrega todos os cursos na inicialização (compartilha a promessa em andamento e gerencia o loading)
-  useEffect(() => {
-    let isMounted = true;
+  // 1. Carrega os cursos SOMENTE quando o usuário logado pode lê-los.
+  //
+  // As regras do Firestore só liberam a leitura de courses/modules/lessons para
+  // admin ou para aluno ativo (accessEnabled == true) MATRICULADO naquele curso.
+  // Por isso o aluno só consulta os cursos liberados para ele (filtro por courseId).
+  //
+  // A busca roda sempre que o usuário/permissão/matrícula muda e, enquanto o
+  // usuário estiver na plataforma, ouvintes em tempo real recarregam os cursos
+  // quando o admin adiciona, edita ou exclui aulas.
+  const readableCourseIds = getReadableCourseIds(user);
+  const contentAccessKey = user
+    ? [
+        user.uid,
+        user.role || "student",
+        user.accessEnabled === true,
+        readableCourseIds === null ? "*" : readableCourseIds.join(","),
+      ].join("|")
+    : null;
 
-    getAllCourses()
-      .then((courses) => {
-        if (!isMounted) return;
-        startTransition(() => {
-          setAllCourses(courses);
+  useEffect(() => {
+    if (!user || !contentAccessKey) return;
+
+    const canReadContent =
+      (user.role === "admin" && !isDemoUser(user)) || user.accessEnabled === true;
+    // Aluno bloqueado ou de demonstração: não consulta o Firestore
+    if (!canReadContent || isDemoUser(user)) return;
+
+    const profileSnapshot = user;
+    const readableIds = getReadableCourseIds(profileSnapshot);
+
+    let isMounted = true;
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const loadCourses = () => {
+      clearCourseCache();
+      getAllCourses(profileSnapshot)
+        .then((courses) => {
+          if (!isMounted) return;
+          startTransition(() => {
+            setAllCourses(courses);
+            setCoursesLoading(false);
+          });
+        })
+        .catch((err) => {
+          console.error("Erro ao carregar cursos do Firestore:", err);
+          if (!isMounted) return;
           setCoursesLoading(false);
         });
-      })
-      .catch((err) => {
-        console.error("Erro ao carregar cursos do Firestore:", err);
-        if (!isMounted) return;
-        setCoursesLoading(false);
+    };
+
+    // Agrupa várias alterações seguidas do admin em uma única recarga
+    const scheduleReload = () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(loadCourses, 400);
+    };
+
+    loadCourses();
+
+    // Ouvintes em tempo real: ignora o primeiro disparo (estado inicial já carregado)
+    const listen = (label: string, target: Query | DocumentReference) => {
+      let isFirstSnapshot = true;
+      const onNext = () => {
+        if (isFirstSnapshot) {
+          isFirstSnapshot = false;
+          return;
+        }
+        scheduleReload();
+      };
+      const onError = (err: unknown) => {
+        console.error(`Erro no ouvinte em tempo real de "${label}":`, err);
+      };
+      return target.type === "document"
+        ? onSnapshot(target, onNext, onError)
+        : onSnapshot(target, onNext, onError);
+    };
+
+    const unsubscribers: (() => void)[] = [];
+    if (readableIds === null) {
+      // Admin: acompanha as coleções inteiras
+      ["lessons", "modules", "courses"].forEach((colName) => {
+        unsubscribers.push(listen(colName, collection(db, colName)));
       });
+    } else if (readableIds.length > 0) {
+      // Aluno: acompanha somente os cursos liberados para ele
+      unsubscribers.push(
+        listen("lessons", query(collection(db, "lessons"), where("courseId", "in", readableIds)))
+      );
+      unsubscribers.push(
+        listen("modules", query(collection(db, "modules"), where("courseId", "in", readableIds)))
+      );
+      Array.from(new Set(readableIds.map((id) => normalizeCourseId(id)))).forEach((id) => {
+        unsubscribers.push(listen(`courses/${id}`, doc(db, "courses", id)));
+      });
+    }
 
     return () => {
       isMounted = false;
+      if (reloadTimer) clearTimeout(reloadTimer);
+      unsubscribers.forEach((unsub) => unsub());
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentAccessKey]);
 
   // 2. Busca o progresso detalhado do curso ativo em segundo plano (não bloqueia exibição das aulas)
   useEffect(() => {
@@ -286,10 +370,64 @@ export default function StudentApp() {
   }, [user?.uid]);
 
   // 3. Observa o estado de autenticação do Firebase em tempo real (montagem única)
+  //
+  // Depois do login, o documento users/{uid} também é ouvido em tempo real:
+  // quando o admin libera/bloqueia o aluno ou altera os cursos matriculados,
+  // a tela do aluno é atualizada na hora, sem precisar sair e entrar de novo.
   useEffect(() => {
+    let unsubscribeProfile: (() => void) | null = null;
+
+    const buildProfile = (
+      firebaseUser: User,
+      dbProfile: UserProfile | null
+    ): UserProfile => {
+      const studentProfile: UserProfile = dbProfile
+        ? { ...dbProfile, uid: dbProfile.uid || firebaseUser.uid }
+        : {
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            displayName:
+              firebaseUser.displayName ||
+              (firebaseUser.email ? firebaseUser.email.split("@")[0] : "Aluno"),
+            photoURL: firebaseUser.photoURL,
+            role: "student",
+            accessEnabled: false,
+            courseAccess: {
+              "rockwell-controle-analogico-supervisorio": false,
+            },
+            createdAt: new Date().toISOString(),
+          };
+
+      // Aluno Demonstração nunca possui papel de administrador
+      if (isDemoUser(studentProfile)) {
+        studentProfile.role = "student";
+      }
+      return studentProfile;
+    };
+
+    const applyProfile = (studentProfile: UserProfile) => {
+      startTransition(() => {
+        setUser(studentProfile);
+
+        // Garante que o curso ativo esteja entre os cursos liberados para o aluno
+        const accessibleIds = getUserAccessibleCourseIds(studentProfile);
+        if (accessibleIds.length > 0 && studentProfile.role !== "admin") {
+          setSelectedCourseId((curr) =>
+            accessibleIds.includes(curr) ? curr : accessibleIds[0]
+          );
+        }
+      });
+    };
+
     const unsubscribe = onAuthStateChanged(
       auth,
       async (firebaseUser: User | null) => {
+        // Encerra o ouvinte do perfil anterior (troca de conta ou logout)
+        if (unsubscribeProfile) {
+          unsubscribeProfile();
+          unsubscribeProfile = null;
+        }
+
         if (firebaseUser) {
           try {
             // Sincroniza imediatamente o usuário com o Firestore
@@ -308,38 +446,20 @@ export default function StudentApp() {
 
           // Lê permissões e dados oficiais salvos no documento do usuário no Firestore
           const dbProfile = await getUserProfile(firebaseUser.uid);
+          applyProfile(buildProfile(firebaseUser, dbProfile));
 
-          const studentProfile: UserProfile = dbProfile || {
-            uid: firebaseUser.uid,
-            email: firebaseUser.email,
-            displayName:
-              firebaseUser.displayName ||
-              (firebaseUser.email ? firebaseUser.email.split("@")[0] : "Aluno"),
-            photoURL: firebaseUser.photoURL,
-            role: "student",
-            accessEnabled: false,
-            courseAccess: {
-              "rockwell-controle-analogico-supervisorio": false,
+          // Mantém o perfil sincronizado em tempo real com as alterações do admin
+          unsubscribeProfile = onSnapshot(
+            doc(db, "users", firebaseUser.uid),
+            (snap) => {
+              if (!snap.exists()) return;
+              clearUserProfileCache(firebaseUser.uid);
+              applyProfile(buildProfile(firebaseUser, snap.data() as UserProfile));
             },
-            createdAt: new Date().toISOString(),
-          };
-
-          // Aluno Demonstração nunca possui papel de administrador
-          if (isDemoUser(studentProfile)) {
-            studentProfile.role = "student";
-          }
-
-          startTransition(() => {
-            setUser(studentProfile);
-
-            // Garante que o curso ativo esteja entre os cursos liberados para o aluno
-            const accessibleIds = getUserAccessibleCourseIds(studentProfile);
-            if (accessibleIds.length > 0 && studentProfile.role !== "admin") {
-              setSelectedCourseId((curr) =>
-                accessibleIds.includes(curr) ? curr : accessibleIds[0]
-              );
+            (err) => {
+              console.error("Erro no ouvinte em tempo real do perfil do usuário:", err);
             }
-          });
+          );
         } else {
           startTransition(() => {
             setUser(null);
@@ -349,14 +469,17 @@ export default function StudentApp() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (unsubscribeProfile) unsubscribeProfile();
+    };
   }, []);
 
   // Recarrega todos os cursos após alterações administrativas
   const reloadAllCourses = async () => {
     setCoursesLoading(true);
     try {
-      const courses = await getAllCourses();
+      const courses = await getAllCourses(user);
       startTransition(() => {
         setAllCourses(courses);
         setCoursesLoading(false);
@@ -395,6 +518,7 @@ export default function StudentApp() {
     );
 
     setUser(demoUser);
+    setCoursesLoading(false);
 
     try {
       const progressData = await getUserProgress(demoUser.uid, selectedCourseId);
@@ -793,6 +917,7 @@ export default function StudentApp() {
           {currentTab === "admin" && isAdmin && (
             <AdminView
               course={course}
+              allCourses={allCourses}
               onRefreshCourse={reloadAllCourses}
               onSelectCourseId={handleSelectCourse}
             />

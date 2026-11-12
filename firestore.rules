@@ -1,75 +1,252 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Função auxiliar para verificar se o usuário é administrador
-    function isAdmin() {
-      return request.auth != null && (
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-        request.auth.token.email == 'vlautomacao2026@gmail.com'
-      );
+
+    // ============================================================
+    // AUTENTICAÇÃO
+    // ============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    // Regra para usuários:
-    // - Leitura: aluno acessa seu perfil; admin visualiza todos
-    // - Criação: usuário autenticado só cria o próprio users/{uid}, como student e com accessEnabled: false
-    // - Atualização: somente admin altera role, accessEnabled, courseAccess e enrolledCourses
-    // - Exclusão: somente admin
-    match /users/{userId} {
-      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
-      
-      allow create: if request.auth != null && (
-        isAdmin() || (
-          request.auth.uid == userId &&
-          request.resource.data.uid == userId &&
-          request.resource.data.role == 'student' &&
-          request.resource.data.accessEnabled == false
-        )
-      );
 
-      allow update: if request.auth != null && (
-        isAdmin() || (
-          request.auth.uid == userId &&
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'role',
-            'accessEnabled',
-            'courseAccess',
-            'enrolledCourses'
-          ])
+    // ============================================================
+    // ADMIN
+    // ============================================================
+
+    function isAdmin() {
+      return isAuthenticated()
+        && exists(
+          /databases/$(database)/documents/users/$(request.auth.uid)
         )
-      );
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == "admin";
+    }
+
+
+    // ============================================================
+    // ACESSO À PLATAFORMA
+    // ============================================================
+
+    function hasActiveAccess() {
+      return isAuthenticated()
+        && exists(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.accessEnabled == true;
+    }
+
+
+    // ============================================================
+    // MATRÍCULA EM CURSO
+    //
+    // O aluno só lê o conteúdo (curso, módulos e aulas com links de
+    // vídeo) dos cursos liberados no perfil dele: enrolledCourses ou
+    // courseAccess. Mesma lógica de getUserAccessibleCourseIds() no app.
+    //
+    // Cada curso tem o ID oficial e um ID antigo (dados legados):
+    //   rockwell-basico                  <- rockwell-controle-analogico-supervisorio
+    //   rControl-entrada-saida-analogica <- rockwell-intermediario
+    //   IHM-supervisorio                 <- rockwell-avancado
+    // ============================================================
+
+    function courseIdGroup(courseId) {
+      let basico = ['rockwell-basico', 'rockwell-controle-analogico-supervisorio'];
+      let controle = ['rControl-entrada-saida-analogica', 'rockwell-intermediario'];
+      let ihm = ['IHM-supervisorio', 'rockwell-avancado'];
+
+      return courseId in basico ? basico
+        : courseId in controle ? controle
+        : courseId in ihm ? ihm
+        : [courseId, courseId];
+    }
+
+    function isEnrolledIn(courseId) {
+      let u = get(
+        /databases/$(database)/documents/users/$(request.auth.uid)
+      ).data;
+      let enrolled = u.get('enrolledCourses', []);
+      let access = u.get('courseAccess', {});
+      let ids = courseIdGroup(courseId);
+
+      return enrolled.hasAny(ids)
+        || access.get(ids[0], false) == true
+        || access.get(ids[1], false) == true;
+    }
+
+    function canReadCourseContent(courseId) {
+      return isAdmin() || (hasActiveAccess() && isEnrolledIn(courseId));
+    }
+
+
+    // ============================================================
+    // USUÁRIOS
+    // ============================================================
+
+    match /users/{userId} {
+
+      // ----------------------------------------------------------
+      // LEITURA
+      // ----------------------------------------------------------
+
+      allow read: if isAuthenticated()
+        && (
+          request.auth.uid == userId
+          || isAdmin()
+        );
+
+
+      // ----------------------------------------------------------
+      // CRIAÇÃO
+      //
+      // Novo aluno:
+      // - somente o próprio UID
+      // - role student
+      // - plataforma bloqueada
+      //
+      // enrolledCourses não é mais obrigatório.
+      // courseAccess também começa bloqueado.
+      // ----------------------------------------------------------
+
+      allow create: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.data.role == "student"
+        && request.resource.data.accessEnabled == false;
+
+
+      // ----------------------------------------------------------
+      // ATUALIZAÇÃO
+      //
+      // ADMIN:
+      // pode alterar qualquer informação.
+      //
+      // ALUNO:
+      // somente dados pessoais (nome, e-mail, foto...).
+      //
+      // Usa diff().affectedKeys() em vez de comparar campo a campo:
+      // comparar um campo que não existe no documento (ex.: aluno novo
+      // sem enrolledCourses) gera erro na regra e bloqueava a atualização.
+      // ----------------------------------------------------------
+
+      allow update: if isAuthenticated()
+        && (
+          isAdmin()
+
+          ||
+
+          (
+            request.auth.uid == userId
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+              'role',
+              'accessEnabled',
+              'courseAccess',
+              'enrolledCourses'
+            ])
+          )
+        );
+
+
+      // ----------------------------------------------------------
+      // EXCLUSÃO
+      // ----------------------------------------------------------
 
       allow delete: if isAdmin();
     }
-    
-    // Cursos, Módulos e Aulas: leitura permitida para todos autenticados, edição exclusiva para admin
-    match /courses/{courseId} {
-      allow read: if true;
-      allow write: if isAdmin();
+
+
+    // ============================================================
+    // PROGRESSO
+    // ============================================================
+
+    // O ID do documento segue o formato "{uid}_{courseId}".
+    // A posse é verificada pelo ID do documento, e não só pelo campo userId:
+    // - impede que um aluno crie "OUTRO-UID_curso" e bloqueie o progresso do colega;
+    // - permite ler um progresso que ainda não existe (curso novo) sem erro de permissão.
+
+    function ownsProgressDoc(progressId) {
+      return isAuthenticated()
+        && progressId.matches(request.auth.uid + '_.+');
     }
-    
-    match /modules/{moduleId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-    
-    match /lessons/{lessonId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-    
-    // Aulas excluídas pelo administrador para persistência da exclusão
-    match /deletedLessons/{lessonId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-    
-    // Progresso do aluno: o aluno acessa seu progresso; admin pode auditar
+
     match /progress/{progressId} {
-      allow read, write: if request.auth != null && (
-        resource == null || resource.data.userId == request.auth.uid || request.resource.data.userId == request.auth.uid || isAdmin()
-      );
+
+      allow read: if isAdmin() || ownsProgressDoc(progressId);
+
+      allow create: if ownsProgressDoc(progressId)
+        && request.resource.data.userId == request.auth.uid;
+
+      allow update: if isAdmin()
+        || (
+          ownsProgressDoc(progressId)
+          && request.resource.data.userId == request.auth.uid
+        );
+
+      allow delete: if isAdmin() || ownsProgressDoc(progressId);
+    }
+
+
+    // ============================================================
+    // CURSOS
+    // ============================================================
+
+    match /courses/{courseId} {
+
+      allow read: if canReadCourseContent(courseId);
+
+      allow write: if isAdmin();
+    }
+
+
+    // ============================================================
+    // MÓDULOS
+    // ============================================================
+
+    match /modules/{moduleId} {
+
+      allow read: if canReadCourseContent(resource.data.courseId);
+
+      allow write: if isAdmin();
+    }
+
+
+    // ============================================================
+    // AULAS
+    // ============================================================
+
+    match /lessons/{lessonId} {
+
+      allow read: if canReadCourseContent(resource.data.courseId);
+
+      allow write: if isAdmin();
+    }
+
+
+    // ============================================================
+    // AULAS EXCLUÍDAS
+    //
+    // O aluno também precisa ler esta lista: o app usa ela para
+    // esconder aulas que o admin excluiu.
+    // ============================================================
+
+    match /deletedLessons/{lessonId} {
+
+      allow read: if isAdmin() || hasActiveAccess();
+
+      allow write: if isAdmin();
+    }
+
+
+    // ============================================================
+    // BLOQUEIO PADRÃO
+    // ============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

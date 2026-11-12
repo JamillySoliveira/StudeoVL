@@ -24,7 +24,7 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { UserProfile } from "@/lib/types";
-import { getUserAccessibleCourseIds, isDemoUser } from "@/lib/courseService";
+import { getUserAccessibleCourseIds, normalizeCourseId, isDemoUser } from "@/lib/courseService";
 import { getStoredNotices } from "@/lib/constants";
 
 export type TabType =
@@ -61,7 +61,7 @@ export function Sidebar({
 const accessibleCourseIds = getUserAccessibleCourseIds(user);
 
 const noticesCount = getStoredNotices().filter((notice) =>
-  accessibleCourseIds.includes(notice.courseId)
+  accessibleCourseIds.includes(normalizeCourseId(notice.courseId))
 ).length;
   // Navegação: Início, Meus cursos, Avisos, Certificado, Meu perfil, Ajuda
   const navItems: {

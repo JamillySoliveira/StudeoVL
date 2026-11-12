@@ -53,6 +53,8 @@ import {
 import { Course, Lesson, UserProfile } from "@/lib/types";
 import {
   getCourseData,
+  getUserEnrolledCourseIds,
+  normalizeCourseId,
   fetchAllUsers,
   toggleUserAccess,
   updateUserEnrolledCourses,
@@ -72,6 +74,8 @@ import {
 
 interface AdminViewProps {
   course: Course;
+  // Todos os cursos já carregados do Firestore (usado para mostrar a quantidade real de aulas)
+  allCourses?: Course[];
   onRefreshCourse: () => void;
   onSelectCourseId?: (courseId: string) => void;
 }
@@ -304,6 +308,7 @@ function formatBytes(bytes: number, decimals = 1): string {
  */
 export function AdminView({
   course,
+  allCourses = [],
   onRefreshCourse,
   onSelectCourseId,
 }: AdminViewProps) {
@@ -378,14 +383,8 @@ export function AdminView({
           // Registra rascunho apenas para estudantes (excluindo administradores)
           data.forEach((u) => {
             if (u.role !== "admin") {
-              const enrolled = Array.isArray(u.enrolledCourses) ? [...u.enrolledCourses] : [];
-              if (
-                u.courseAccess?.["rockwell-controle-analogico-supervisorio"] &&
-                !enrolled.includes("rockwell-basico")
-              ) {
-                enrolled.push("rockwell-basico");
-              }
-              drafts[u.uid] = enrolled;
+              // Converte IDs antigos de matrícula para os IDs oficiais dos cursos
+              drafts[u.uid] = getUserEnrolledCourseIds(u);
             }
           });
           setEnrolledDrafts(drafts);
@@ -503,9 +502,11 @@ export function AdminView({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Limite de segurança razoável para documento PDF (até 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setCertError("O arquivo do certificado deve ter até 5MB.");
+    // O arquivo é salvo em base64 dentro do documento do curso no Firestore,
+    // que aceita no máximo 1 MiB por documento. Base64 aumenta o tamanho em ~33%,
+    // então o limite seguro do arquivo original é ~700 KB.
+    if (file.size > 700 * 1024) {
+      setCertError("O arquivo do certificado deve ter até 700 KB (limite do Firestore).");
       setTimeout(() => setCertError(null), 4000);
       e.target.value = "";
       return;
@@ -713,15 +714,11 @@ export function AdminView({
   const activeStudents = students.filter((u) => u.accessEnabled !== false).length;
   const blockedStudents = students.filter((u) => u.accessEnabled === false).length;
 
-  const countBasico = students.filter((u) =>
-    (u.enrolledCourses || []).includes("rockwell-basico")
-  ).length;
-  const countIntermediario = students.filter((u) =>
-    (u.enrolledCourses || []).includes("rockwell-intermediario")
-  ).length;
-  const countAvancado = students.filter((u) =>
-    (u.enrolledCourses || []).includes("rockwell-avancado")
-  ).length;
+  const countEnrolled = (courseId: string) =>
+    students.filter((u) => getUserEnrolledCourseIds(u).includes(courseId)).length;
+  const countBasico = countEnrolled(AVAILABLE_COURSES[0].id);
+  const countIntermediario = countEnrolled(AVAILABLE_COURSES[1].id);
+  const countAvancado = countEnrolled(AVAILABLE_COURSES[2].id);
 
   // Lista de alunos com filtro de busca (excluindo qualquer administrador)
   const filteredUsers = students.filter(
@@ -938,12 +935,12 @@ export function AdminView({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {AVAILABLE_COURSES.map((c) => {
                 const isSelected = c.id === selectedCourseId;
+                // Quantidade real de aulas cadastradas no Firestore para cada curso
+                // (antes os cursos não selecionados mostravam valores fixos: 10 e 0)
                 const lessonsCount =
                   c.id === selectedCourseId
                     ? activeCourseData.lessons.length
-                    : c.id === "rockwell-basico"
-                    ? 10
-                    : 0;
+                    : allCourses.find((ac) => ac.id === c.id)?.lessons.length ?? 0;
 
                 return (
                   <button
@@ -1287,7 +1284,7 @@ export function AdminView({
                         : "Clique aqui para fazer upload do Certificado (PDF)"}
                     </p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Formatos aceitos: <strong>PDF (.pdf)</strong> ou imagem em alta resolução (até 5MB)
+                      Formatos aceitos: <strong>PDF (.pdf)</strong> ou imagem em alta resolução (até 700 KB)
                     </p>
                   </div>
 
@@ -1430,41 +1427,20 @@ export function AdminView({
                         </span>
 
                         <div className="flex flex-wrap items-center gap-5">
-                          <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={currentDraft.includes("rockwell-basico")}
-                              onChange={() =>
-                                handleToggleCourseCheckbox(u.uid, "rockwell-basico")
-                              }
-                              className="w-4 h-4 text-[#ea580c] rounded-sm focus:ring-[#ea580c] border-slate-300 dark:border-slate-600 dark:bg-slate-800"
-                            />
-                            <span>Básico</span>
-                          </label>
-
-                          <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={currentDraft.includes("rockwell-intermediario")}
-                              onChange={() =>
-                                handleToggleCourseCheckbox(u.uid, "rockwell-intermediario")
-                              }
-                              className="w-4 h-4 text-[#ea580c] rounded-sm focus:ring-[#ea580c] border-slate-300 dark:border-slate-600 dark:bg-slate-800"
-                            />
-                            <span>Intermediário</span>
-                          </label>
-
-                          <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={currentDraft.includes("rockwell-avancado")}
-                              onChange={() =>
-                                handleToggleCourseCheckbox(u.uid, "rockwell-avancado")
-                              }
-                              className="w-4 h-4 text-[#ea580c] rounded-sm focus:ring-[#ea580c] border-slate-300 dark:border-slate-600 dark:bg-slate-800"
-                            />
-                            <span>Avançado</span>
-                          </label>
+                          {AVAILABLE_COURSES.map((c) => (
+                            <label
+                              key={c.id}
+                              className="inline-flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={currentDraft.includes(c.id)}
+                                onChange={() => handleToggleCourseCheckbox(u.uid, c.id)}
+                                className="w-4 h-4 text-[#ea580c] rounded-sm focus:ring-[#ea580c] border-slate-300 dark:border-slate-600 dark:bg-slate-800"
+                              />
+                              <span>{c.title}</span>
+                            </label>
+                          ))}
                         </div>
                       </div>
 
@@ -1516,9 +1492,11 @@ export function AdminView({
                   onChange={(e) => setNewNoticeCourseId(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-100 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
                 >
-                  <option value="rockwell-basico">Programação Rockwell - Básico</option>
-                  <option value="rockwell-intermediario">Controle de Saída e Entrada Analógica</option>
-                  <option value="rockwell-avancado">IHM e Superviório</option>
+                  {AVAILABLE_COURSES.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1583,11 +1561,9 @@ export function AdminView({
                           {notice.title}
                         </span>
                         <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                          {notice.courseId === "rockwell-basico"
-                            ? "Básico"
-                            : notice.courseId === "rockwell-intermediario"
-                            ? "Intermediário"
-                            : "Avançado"}
+                          {AVAILABLE_COURSES.find(
+                            (c) => c.id === normalizeCourseId(notice.courseId)
+                          )?.title || notice.courseId}
                         </span>
                       </div>
                       <button
