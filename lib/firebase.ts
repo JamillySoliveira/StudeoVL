@@ -29,6 +29,7 @@ import {
   query,
   where,
   orderBy,
+  onSnapshot,
 } from "firebase/firestore";
 
 // Importa as configurações geradas automaticamente pelo ambiente
@@ -89,5 +90,6 @@ export {
   deleteDoc,
   query,
   where,
-  orderBy
+  orderBy,
+  onSnapshot
 };
