@@ -33,7 +33,8 @@
 import React, { useEffect, useState, useTransition, useMemo, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import { auth, db, doc, collection, onSnapshot } from "@/lib/firebase";
+import type { Query, DocumentReference } from "firebase/firestore";
+import { auth, db, doc, collection, onSnapshot, query, where } from "@/lib/firebase";
 import { UserProfile, Course, Lesson } from "@/lib/types";
 import { INITIAL_COURSE, INITIAL_COURSE_ID, AVAILABLE_COURSES } from "@/lib/courseData";
 import {
@@ -49,6 +50,8 @@ import {
   getCourseData,
   getAllCourses,
   clearCourseCache,
+  getReadableCourseIds,
+  normalizeCourseId,
   saveLessonVideoUrl,
   checkUserCourseAccess,
   getUserAccessibleCourseIds,
@@ -220,15 +223,20 @@ export default function StudentApp() {
   // 1. Carrega os cursos SOMENTE quando o usuário logado pode lê-los.
   //
   // As regras do Firestore só liberam a leitura de courses/modules/lessons para
-  // admin ou para aluno com accessEnabled == true. Antes, os cursos eram buscados
-  // uma única vez ao abrir a página (antes do login), a leitura era negada e a
-  // lista de aulas ficava vazia até o aluno recarregar a página.
+  // admin ou para aluno ativo (accessEnabled == true) MATRICULADO naquele curso.
+  // Por isso o aluno só consulta os cursos liberados para ele (filtro por courseId).
   //
-  // Agora a busca roda sempre que o usuário/permissão muda e, enquanto o aluno
-  // estiver na plataforma, ouvintes em tempo real recarregam os cursos quando o
-  // admin adiciona, edita ou exclui aulas.
+  // A busca roda sempre que o usuário/permissão/matrícula muda e, enquanto o
+  // usuário estiver na plataforma, ouvintes em tempo real recarregam os cursos
+  // quando o admin adiciona, edita ou exclui aulas.
+  const readableCourseIds = getReadableCourseIds(user);
   const contentAccessKey = user
-    ? `${user.uid}|${user.role || "student"}|${user.accessEnabled === true}`
+    ? [
+        user.uid,
+        user.role || "student",
+        user.accessEnabled === true,
+        readableCourseIds === null ? "*" : readableCourseIds.join(","),
+      ].join("|")
     : null;
 
   useEffect(() => {
@@ -239,12 +247,15 @@ export default function StudentApp() {
     // Aluno bloqueado ou de demonstração: não consulta o Firestore
     if (!canReadContent || isDemoUser(user)) return;
 
+    const profileSnapshot = user;
+    const readableIds = getReadableCourseIds(profileSnapshot);
+
     let isMounted = true;
     let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
     const loadCourses = () => {
       clearCourseCache();
-      getAllCourses()
+      getAllCourses(profileSnapshot)
         .then((courses) => {
           if (!isMounted) return;
           startTransition(() => {
@@ -268,22 +279,41 @@ export default function StudentApp() {
     loadCourses();
 
     // Ouvintes em tempo real: ignora o primeiro disparo (estado inicial já carregado)
-    const unsubscribers = ["lessons", "modules", "courses"].map((colName) => {
+    const listen = (label: string, target: Query | DocumentReference) => {
       let isFirstSnapshot = true;
-      return onSnapshot(
-        collection(db, colName),
-        () => {
-          if (isFirstSnapshot) {
-            isFirstSnapshot = false;
-            return;
-          }
-          scheduleReload();
-        },
-        (err) => {
-          console.error(`Erro no ouvinte em tempo real de "${colName}":`, err);
+      const onNext = () => {
+        if (isFirstSnapshot) {
+          isFirstSnapshot = false;
+          return;
         }
+        scheduleReload();
+      };
+      const onError = (err: unknown) => {
+        console.error(`Erro no ouvinte em tempo real de "${label}":`, err);
+      };
+      return target.type === "document"
+        ? onSnapshot(target, onNext, onError)
+        : onSnapshot(target, onNext, onError);
+    };
+
+    const unsubscribers: (() => void)[] = [];
+    if (readableIds === null) {
+      // Admin: acompanha as coleções inteiras
+      ["lessons", "modules", "courses"].forEach((colName) => {
+        unsubscribers.push(listen(colName, collection(db, colName)));
+      });
+    } else if (readableIds.length > 0) {
+      // Aluno: acompanha somente os cursos liberados para ele
+      unsubscribers.push(
+        listen("lessons", query(collection(db, "lessons"), where("courseId", "in", readableIds)))
       );
-    });
+      unsubscribers.push(
+        listen("modules", query(collection(db, "modules"), where("courseId", "in", readableIds)))
+      );
+      Array.from(new Set(readableIds.map((id) => normalizeCourseId(id)))).forEach((id) => {
+        unsubscribers.push(listen(`courses/${id}`, doc(db, "courses", id)));
+      });
+    }
 
     return () => {
       isMounted = false;
@@ -449,7 +479,7 @@ export default function StudentApp() {
   const reloadAllCourses = async () => {
     setCoursesLoading(true);
     try {
-      const courses = await getAllCourses();
+      const courses = await getAllCourses(user);
       startTransition(() => {
         setAllCourses(courses);
         setCoursesLoading(false);
