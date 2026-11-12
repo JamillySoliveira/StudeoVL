@@ -72,6 +72,8 @@ import {
 
 interface AdminViewProps {
   course: Course;
+  // Todos os cursos já carregados do Firestore (usado para mostrar a quantidade real de aulas)
+  allCourses?: Course[];
   onRefreshCourse: () => void;
   onSelectCourseId?: (courseId: string) => void;
 }
@@ -304,6 +306,7 @@ function formatBytes(bytes: number, decimals = 1): string {
  */
 export function AdminView({
   course,
+  allCourses = [],
   onRefreshCourse,
   onSelectCourseId,
 }: AdminViewProps) {
@@ -938,12 +941,12 @@ export function AdminView({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {AVAILABLE_COURSES.map((c) => {
                 const isSelected = c.id === selectedCourseId;
+                // Quantidade real de aulas cadastradas no Firestore para cada curso
+                // (antes os cursos não selecionados mostravam valores fixos: 10 e 0)
                 const lessonsCount =
                   c.id === selectedCourseId
                     ? activeCourseData.lessons.length
-                    : c.id === "rockwell-basico"
-                    ? 10
-                    : 0;
+                    : allCourses.find((ac) => ac.id === c.id)?.lessons.length ?? 0;
 
                 return (
                   <button

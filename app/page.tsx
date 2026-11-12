@@ -887,6 +887,7 @@ export default function StudentApp() {
           {currentTab === "admin" && isAdmin && (
             <AdminView
               course={course}
+              allCourses={allCourses}
               onRefreshCourse={reloadAllCourses}
               onSelectCourseId={handleSelectCourse}
             />
