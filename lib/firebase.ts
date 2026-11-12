@@ -8,6 +8,8 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getAuth,
+  connectAuthEmulator,
+  signInWithCredential,
   GoogleAuthProvider,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -18,6 +20,7 @@ import {
 } from "firebase/auth";
 import {
   getFirestore,
+  connectFirestoreEmulator,
   collection,
   doc,
   getDoc,
@@ -72,6 +75,31 @@ googleProvider.setCustomParameters({
 
 // Inicializa o Cloud Firestore usando o banco padrão do projeto Firebase
 export const db = getFirestore(app);
+
+// Desenvolvimento/testes: usa os emuladores locais do Firebase em vez do projeto real.
+// Ative com NEXT_PUBLIC_USE_FIREBASE_EMULATOR=true (nunca em produção).
+if (
+  process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === "true" &&
+  typeof window !== "undefined" &&
+  !(globalThis as { __vlEmulatorsConnected?: boolean }).__vlEmulatorsConnected
+) {
+  (globalThis as { __vlEmulatorsConnected?: boolean }).__vlEmulatorsConnected = true;
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8085);
+
+  // Atalho de login usado pelos testes automatizados (só existe no modo emulador):
+  // o emulador do Auth aceita uma credencial Google falsa em formato JSON.
+  (window as unknown as { __vlEmulatorSignIn?: unknown }).__vlEmulatorSignIn = (
+    email: string,
+    name: string
+  ) =>
+    signInWithCredential(
+      auth,
+      GoogleAuthProvider.credential(
+        JSON.stringify({ sub: email, email, name, email_verified: true })
+      )
+    );
+}
 
 export {
   signInWithEmailAndPassword,
