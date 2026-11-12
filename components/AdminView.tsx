@@ -66,14 +66,14 @@ import {
 } from "@/lib/courseService";
 import { AVAILABLE_COURSES, getVideoEmbedUrl } from "@/lib/courseData";
 import {
-  getStoredNotices,
-  saveStoredNotice,
-  deleteStoredNotice,
   Notice,
 } from "@/lib/constants";
+import { createNotice, deleteNotice, formatNoticeDate } from "@/lib/noticeService";
 
 interface AdminViewProps {
   course: Course;
+  // Avisos publicados (coleção "notices" do Firestore, atualizados em tempo real)
+  notices?: Notice[];
   // Todos os cursos já carregados do Firestore (usado para mostrar a quantidade real de aulas)
   allCourses?: Course[];
   onRefreshCourse: () => void;
@@ -309,6 +309,7 @@ function formatBytes(bytes: number, decimals = 1): string {
 export function AdminView({
   course,
   allCourses = [],
+  notices = [],
   onRefreshCourse,
   onSelectCourseId,
 }: AdminViewProps) {
@@ -345,10 +346,12 @@ export function AdminView({
   const [enrolledDrafts, setEnrolledDrafts] = useState<Record<string, string[]>>({});
 
   // Estados de gestão de avisos
-  const [noticesList, setNoticesList] = useState<Notice[]>(() => getStoredNotices());
+  const noticesList = notices;
+  const [noticeSaving, setNoticeSaving] = useState(false);
+  const [noticeFeedback, setNoticeFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [newNoticeTitle, setNewNoticeTitle] = useState("");
   const [newNoticeMessage, setNewNoticeMessage] = useState("");
-  const [newNoticeCourseId, setNewNoticeCourseId] = useState<string>("rockwell-basico");
+  const [newNoticeCourseId, setNewNoticeCourseId] = useState<string>(AVAILABLE_COURSES[0].id);
 
   const [, startTransition] = useTransition();
 
@@ -677,29 +680,40 @@ export function AdminView({
     }
   };
 
-  // Adiciona novo aviso na aba Avisos
-  const handleCreateNotice = (e: React.FormEvent) => {
+  // Publica novo aviso no Firestore (chega aos alunos do curso em tempo real)
+  const handleCreateNotice = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newNoticeTitle.trim() || !newNoticeMessage.trim()) return;
 
-    const newNotice: Notice = {
-      id: `aviso-${Date.now()}`,
-      courseId: newNoticeCourseId,
-      title: newNoticeTitle.trim(),
-      message: newNoticeMessage.trim(),
-      date: "Hoje",
-    };
-
-    saveStoredNotice(newNotice);
-    setNoticesList(getStoredNotices());
-    setNewNoticeTitle("");
-    setNewNoticeMessage("");
+    try {
+      setNoticeSaving(true);
+      setNoticeFeedback(null);
+      await createNotice({
+        courseId: newNoticeCourseId,
+        title: newNoticeTitle,
+        message: newNoticeMessage,
+      });
+      setNewNoticeTitle("");
+      setNewNoticeMessage("");
+      setNoticeFeedback({ type: "success", text: "Aviso publicado para os alunos do curso!" });
+      setTimeout(() => setNoticeFeedback(null), 4000);
+    } catch (err) {
+      console.error("Erro ao publicar aviso:", err);
+      setNoticeFeedback({ type: "error", text: "Não foi possível publicar o aviso. Tente novamente." });
+    } finally {
+      setNoticeSaving(false);
+    }
   };
 
-  // Exclui aviso
-  const handleDeleteNotice = (noticeId: string) => {
-    deleteStoredNotice(noticeId);
-    setNoticesList(getStoredNotices());
+  // Exclui aviso do Firestore
+  const handleDeleteNotice = async (noticeId: string) => {
+    if (!window.confirm("Deseja realmente excluir este aviso?")) return;
+    try {
+      await deleteNotice(noticeId);
+    } catch (err) {
+      console.error("Erro ao excluir aviso:", err);
+      alert("Não foi possível excluir o aviso.");
+    }
   };
 
   // =======================================================================
@@ -1528,12 +1542,25 @@ export function AdminView({
                 />
               </div>
 
+              {noticeFeedback && (
+                <p
+                  className={`text-xs font-semibold ${
+                    noticeFeedback.type === "success"
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : "text-red-600 dark:text-red-400"
+                  }`}
+                >
+                  {noticeFeedback.text}
+                </p>
+              )}
+
               <button
                 type="submit"
-                className="w-full py-2.5 px-4 bg-[#ea580c] hover:bg-[#c2410c] text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+                disabled={noticeSaving}
+                className="w-full py-2.5 px-4 bg-[#ea580c] hover:bg-[#c2410c] text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <Plus className="w-4 h-4" />
-                <span>Publicar Aviso</span>
+                <span>{noticeSaving ? "Publicando..." : "Publicar Aviso"}</span>
               </button>
             </form>
           </div>
@@ -1564,6 +1591,7 @@ export function AdminView({
                           {AVAILABLE_COURSES.find(
                             (c) => c.id === normalizeCourseId(notice.courseId)
                           )?.title || notice.courseId}
+                          {formatNoticeDate(notice) ? ` · ${formatNoticeDate(notice)}` : ""}
                         </span>
                       </div>
                       <button

@@ -14,7 +14,11 @@ import {
   X,
 } from "lucide-react";
 import { Course, Lesson, UserProfile } from "@/lib/types";
-import { checkUserCourseAccess, getUserAccessibleCourseIds } from "@/lib/courseService";
+import {
+  checkUserCourseAccess,
+  getUserAccessibleCourseIds,
+  filterExistingLessonIds,
+} from "@/lib/courseService";
 import { AVAILABLE_COURSES, getVideoEmbedUrl } from "@/lib/courseData";
 import { getCourseWhatsAppUrl } from "@/lib/constants";
 
@@ -76,8 +80,12 @@ export function DashboardView({
 
   // Lista de aulas concluídas do curso em andamento
   const highlightedCompleted = highlightedCourse
-    ? coursesProgressMap[highlightedCourse.id] ||
-      (highlightedCourse.id === course.id ? completedLessons : [])
+    ? filterExistingLessonIds(
+        highlightedCourse.lessons,
+        highlightedCourse.id === course.id
+          ? completedLessons
+          : coursesProgressMap[highlightedCourse.id] || []
+      )
     : [];
 
   const highlightedLessons = highlightedCourse?.lessons || [];
@@ -304,9 +312,10 @@ export function DashboardView({
             const isEnrolled = checkUserCourseAccess(user, c.id);
 
             // Progresso isolado para este curso específico (nunca misturado)
-            const courseCompleted =
-              coursesProgressMap[c.id] ||
-              (c.id === course.id ? completedLessons : []);
+            const courseCompleted = filterExistingLessonIds(
+              c.lessons,
+              c.id === course.id ? completedLessons : coursesProgressMap[c.id] || []
+            );
             const totalCourseLessons = c.lessons?.length || 0;
             const completedCount = courseCompleted.length;
             const coursePercent =

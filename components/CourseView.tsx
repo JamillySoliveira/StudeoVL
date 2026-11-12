@@ -26,10 +26,13 @@ import {
 } from "lucide-react";
 import { Course, Lesson } from "@/lib/types";
 import { getCourseWhatsAppUrl } from "@/lib/constants";
+import { filterExistingLessonIds } from "@/lib/courseService";
 
 interface CourseViewProps {
   course: Course;
   enrolledCourses?: Course[];
+  // Progresso de cada curso: { [courseId]: IDs das aulas concluídas }
+  coursesProgressMap?: Record<string, string[]>;
   onSelectCourse?: (courseId: string) => void;
   completedLessons: string[];
   onSelectLesson: (lesson: Lesson) => void;
@@ -41,6 +44,7 @@ interface CourseViewProps {
 export function CourseView({
   course,
   enrolledCourses = [],
+  coursesProgressMap = {},
   onSelectCourse,
   completedLessons,
   onSelectLesson,
@@ -113,7 +117,11 @@ export function CourseView({
         const isExpanded = !!expandedCourseIds[c.id];
         const lessons = c.lessons || [];
         const totalCount = lessons.length;
-        const currentCompleted = isCurrentActive ? completedLessons : [];
+        // Usa o progresso real de cada curso (antes, os cursos não ativos mostravam 0%)
+        const currentCompleted = filterExistingLessonIds(
+          lessons,
+          isCurrentActive ? completedLessons : coursesProgressMap[c.id] || []
+        );
         const completedCount = currentCompleted.length;
         const progressPercent =
           totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;

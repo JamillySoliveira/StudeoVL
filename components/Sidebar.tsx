@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { UserProfile } from "@/lib/types";
 import { getUserAccessibleCourseIds, normalizeCourseId, isDemoUser } from "@/lib/courseService";
-import { getStoredNotices } from "@/lib/constants";
+import { Notice } from "@/lib/constants";
 
 export type TabType =
   | "dashboard"
@@ -46,6 +46,7 @@ interface SidebarProps {
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   progressPercent: number;
+  notices?: Notice[];
 }
 
 export function Sidebar({
@@ -55,12 +56,13 @@ export function Sidebar({
   onLogout,
   isOpenMobile,
   onCloseMobile,
+  notices = [],
 }: SidebarProps) {
 
   // Quantidade de avisos disponíveis para os cursos aos quais o aluno possui acesso
 const accessibleCourseIds = getUserAccessibleCourseIds(user);
 
-const noticesCount = getStoredNotices().filter((notice) =>
+const noticesCount = notices.filter((notice) =>
   accessibleCourseIds.includes(normalizeCourseId(notice.courseId))
 ).length;
   // Navegação: Início, Meus cursos, Avisos, Certificado, Meu perfil, Ajuda

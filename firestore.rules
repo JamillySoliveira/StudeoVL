@@ -242,6 +242,27 @@ service cloud.firestore {
 
 
     // ============================================================
+    // AVISOS (COMUNICADOS)
+    //
+    // Admin publica e exclui. Aluno ativo lê somente os avisos dos
+    // cursos em que está matriculado.
+    // ============================================================
+
+    match /notices/{noticeId} {
+
+      allow read: if canReadCourseContent(resource.data.courseId);
+
+      allow create: if isAdmin()
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.message is string
+        && request.resource.data.courseId is string;
+
+      allow update, delete: if isAdmin();
+    }
+
+
+    // ============================================================
     // BLOQUEIO PADRÃO
     // ============================================================
 
