@@ -43,6 +43,48 @@ service cloud.firestore {
 
 
     // ============================================================
+    // MATRÍCULA EM CURSO
+    //
+    // O aluno só lê o conteúdo (curso, módulos e aulas com links de
+    // vídeo) dos cursos liberados no perfil dele: enrolledCourses ou
+    // courseAccess. Mesma lógica de getUserAccessibleCourseIds() no app.
+    //
+    // Cada curso tem o ID oficial e um ID antigo (dados legados):
+    //   rockwell-basico                  <- rockwell-controle-analogico-supervisorio
+    //   rControl-entrada-saida-analogica <- rockwell-intermediario
+    //   IHM-supervisorio                 <- rockwell-avancado
+    // ============================================================
+
+    function courseIdGroup(courseId) {
+      let basico = ['rockwell-basico', 'rockwell-controle-analogico-supervisorio'];
+      let controle = ['rControl-entrada-saida-analogica', 'rockwell-intermediario'];
+      let ihm = ['IHM-supervisorio', 'rockwell-avancado'];
+
+      return courseId in basico ? basico
+        : courseId in controle ? controle
+        : courseId in ihm ? ihm
+        : [courseId, courseId];
+    }
+
+    function isEnrolledIn(courseId) {
+      let u = get(
+        /databases/$(database)/documents/users/$(request.auth.uid)
+      ).data;
+      let enrolled = u.get('enrolledCourses', []);
+      let access = u.get('courseAccess', {});
+      let ids = courseIdGroup(courseId);
+
+      return enrolled.hasAny(ids)
+        || access.get(ids[0], false) == true
+        || access.get(ids[1], false) == true;
+    }
+
+    function canReadCourseContent(courseId) {
+      return isAdmin() || (hasActiveAccess() && isEnrolledIn(courseId));
+    }
+
+
+    // ============================================================
     // USUÁRIOS
     // ============================================================
 
@@ -154,7 +196,7 @@ service cloud.firestore {
 
     match /courses/{courseId} {
 
-      allow read: if isAdmin() || hasActiveAccess();
+      allow read: if canReadCourseContent(courseId);
 
       allow write: if isAdmin();
     }
@@ -166,7 +208,7 @@ service cloud.firestore {
 
     match /modules/{moduleId} {
 
-      allow read: if isAdmin() || hasActiveAccess();
+      allow read: if canReadCourseContent(resource.data.courseId);
 
       allow write: if isAdmin();
     }
@@ -178,7 +220,7 @@ service cloud.firestore {
 
     match /lessons/{lessonId} {
 
-      allow read: if isAdmin() || hasActiveAccess();
+      allow read: if canReadCourseContent(resource.data.courseId);
 
       allow write: if isAdmin();
     }
