@@ -37,6 +37,8 @@ import type { Query, DocumentReference } from "firebase/firestore";
 import { auth, db, doc, collection, onSnapshot, query, where } from "@/lib/firebase";
 import { UserProfile, Course, Lesson } from "@/lib/types";
 import { INITIAL_COURSE, INITIAL_COURSE_ID, AVAILABLE_COURSES } from "@/lib/courseData";
+import { DEMO_NOTICES, Notice } from "@/lib/constants";
+import { subscribeNotices } from "@/lib/noticeService";
 import {
   getUserProgress,
   getUserCoursesProgressMap,
@@ -52,6 +54,7 @@ import {
   clearCourseCache,
   getReadableCourseIds,
   normalizeCourseId,
+  filterExistingLessonIds,
   saveLessonVideoUrl,
   checkUserCourseAccess,
   getUserAccessibleCourseIds,
@@ -165,6 +168,9 @@ export default function StudentApp() {
       modules: [],
     };
   }, [sanitizedCourses, selectedCourseId]);
+
+  // Avisos publicados pelo admin (coleção "notices", em tempo real)
+  const [notices, setNotices] = useState<Notice[]>([]);
 
   // Aula selecionada atualmente para assistir no reprodutor
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
@@ -322,6 +328,23 @@ export default function StudentApp() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentAccessKey]);
+
+  // 1b. Avisos em tempo real (admin: todos; aluno: só dos cursos matriculados)
+  useEffect(() => {
+    if (!user || !contentAccessKey) return;
+    if (isDemoUser(user)) return;
+    const canReadContent =
+      (user.role === "admin" && !isDemoUser(user)) || user.accessEnabled === true;
+    if (!canReadContent) return;
+
+    return subscribeNotices(getReadableCourseIds(user), (list) => {
+      startTransition(() => setNotices(list));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentAccessKey]);
+
+  // Aluno Demonstração vê apenas avisos de exemplo
+  const visibleNotices = isDemoUser(user) ? DEMO_NOTICES : notices;
 
   // 2. Busca o progresso detalhado do curso ativo em segundo plano (não bloqueia exibição das aulas)
   useEffect(() => {
@@ -567,6 +590,26 @@ export default function StudentApp() {
     showToast("Curso selecionado!");
   }, []);
 
+  // Métricas do curso atual (contam apenas aulas que ainda existem no curso)
+  const lessons = useMemo(() => course.lessons || [], [course]);
+  const totalLessons = lessons.length;
+  const lessonsWithForm = useMemo(() => lessons.filter((l) => Boolean(l.formUrl)), [lessons]);
+  const totalForms = lessonsWithForm.length;
+  const validCompletedLessons = useMemo(
+    () => filterExistingLessonIds(lessons, completedLessons),
+    [lessons, completedLessons]
+  );
+  const validCompletedForms = useMemo(
+    () => filterExistingLessonIds(lessonsWithForm, completedForms),
+    [lessonsWithForm, completedForms]
+  );
+  const completedCount = validCompletedLessons.length;
+  const completedFormsCount = validCompletedForms.length;
+  const progressPercent = useMemo(
+    () => (totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0),
+    [totalLessons, completedCount]
+  );
+
   // Alterna o status da aula entre concluída e pendente, salvando no Firestore
   const handleToggleLessonComplete = async (lessonId: string) => {
     if (!user) return;
@@ -577,10 +620,10 @@ export default function StudentApp() {
         user.uid,
         course.id,
         lessonId,
-        completedLessons,
-        completedForms,
-        course.lessons.length,
-        course.lessons.filter((l) => Boolean(l.formUrl)).length
+        validCompletedLessons,
+        validCompletedForms,
+        totalLessons,
+        totalForms
       );
       setCompletedLessons(result.updatedLessons);
       setCoursesProgressMap((prev) => ({
@@ -595,6 +638,7 @@ export default function StudentApp() {
       }
     } catch (error) {
       console.error("Erro ao atualizar progresso de aula:", error);
+      showToast("Não foi possível salvar o progresso. Verifique sua conexão e tente novamente.");
     }
   };
 
@@ -608,10 +652,10 @@ export default function StudentApp() {
         user.uid,
         course.id,
         lessonId,
-        completedForms,
-        completedLessons,
-        course.lessons.length,
-        course.lessons.filter((l) => Boolean(l.formUrl)).length
+        validCompletedForms,
+        validCompletedLessons,
+        totalLessons,
+        totalForms
       );
       setCompletedForms(result.updatedForms);
 
@@ -622,6 +666,7 @@ export default function StudentApp() {
       }
     } catch (error) {
       console.error("Erro ao atualizar status do formulário:", error);
+      showToast("Não foi possível salvar a atividade. Verifique sua conexão e tente novamente.");
     }
   };
 
@@ -684,14 +729,6 @@ export default function StudentApp() {
     [user, course.id]
   );
 
-  // Métricas do curso atual
-  const lessons = course.lessons || [];
-  const totalLessons = lessons.length;
-  const completedCount = completedLessons.length;
-  const progressPercent = useMemo(
-    () => (totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0),
-    [totalLessons, completedCount]
-  );
 
   // =====================================================================
   // RENDERIZAÇÃO: TELAS ESPECIAIS (LOADING, LOGIN E BLOQUEIO)
@@ -767,6 +804,7 @@ export default function StudentApp() {
         isOpenMobile={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
         progressPercent={progressPercent}
+        notices={visibleNotices}
       />
 
       {/* Conteúdo Principal da Plataforma */}
@@ -824,7 +862,8 @@ export default function StudentApp() {
               course={course}
               enrolledCourses={enrolledCoursesList}
               onSelectCourse={handleSelectCourse}
-              completedLessons={completedLessons}
+              completedLessons={validCompletedLessons}
+              coursesProgressMap={coursesProgressMap}
               onSelectLesson={handleSelectLesson}
               onToggleComplete={handleToggleLessonComplete}
               hasAccess={hasAccess}
@@ -836,6 +875,7 @@ export default function StudentApp() {
           {currentTab === "notices" && (
             <NoticesView
               user={user}
+              notices={visibleNotices}
               onGoToCourse={handleSelectAndOpenCourse}
             />
           )}
@@ -864,7 +904,7 @@ export default function StudentApp() {
               course={course}
               enrolledCourses={enrolledCoursesList}
               onSelectCourse={handleSelectCourse}
-              completedLessons={completedLessons}
+              completedLessons={validCompletedLessons}
               onToggleComplete={handleToggleLessonComplete}
               onSelectLesson={handleSelectLesson}
             />
@@ -879,6 +919,8 @@ export default function StudentApp() {
               onSelectCourse={handleSelectCourse}
               completedLessonsCount={completedCount}
               totalLessonsCount={totalLessons}
+              completedFormsCount={completedFormsCount}
+              totalFormsCount={totalForms}
               onGoToCourse={() => setCurrentTab("course")}
             />
           )}
@@ -918,6 +960,7 @@ export default function StudentApp() {
             <AdminView
               course={course}
               allCourses={allCourses}
+              notices={notices}
               onRefreshCourse={reloadAllCourses}
               onSelectCourseId={handleSelectCourse}
             />

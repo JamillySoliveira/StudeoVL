@@ -11,6 +11,8 @@ interface CertificateViewProps {
   onSelectCourse?: (courseId: string) => void;
   completedLessonsCount: number;
   totalLessonsCount: number;
+  completedFormsCount?: number;
+  totalFormsCount?: number;
   onGoToCourse: () => void;
 }
 
@@ -28,11 +30,16 @@ export function CertificateView({
   onSelectCourse,
   completedLessonsCount,
   totalLessonsCount,
+  completedFormsCount = 0,
+  totalFormsCount = 0,
   onGoToCourse,
 }: CertificateViewProps) {
-  // Verifica se o aluno completou todas as aulas
-  const isCompleted =
+  // Regra oficial de conclusão: 100% das aulas E 100% das atividades (Google Forms)
+  const lessonsDone =
     totalLessonsCount > 0 && completedLessonsCount >= totalLessonsCount;
+  const formsDone = totalFormsCount === 0 || completedFormsCount >= totalFormsCount;
+  const isCompleted = lessonsDone && formsDone;
+  const pendingForms = Math.max(totalFormsCount - completedFormsCount, 0);
 
   // Verifica se o administrador cadastrou o arquivo do certificado
   const hasCertificateFile = Boolean(course.certificateUrl);
@@ -109,6 +116,21 @@ export function CertificateView({
             <p className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-200">
               Certificado disponível após a conclusão do curso.
             </p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Aulas concluídas: {Math.min(completedLessonsCount, totalLessonsCount)} de {totalLessonsCount}
+              {totalFormsCount > 0 && (
+                <>
+                  {" · "}Atividades respondidas: {Math.min(completedFormsCount, totalFormsCount)} de{" "}
+                  {totalFormsCount}
+                </>
+              )}
+            </p>
+            {lessonsDone && pendingForms > 0 && (
+              <p className="text-sm font-semibold text-[#ea580c] dark:text-orange-400">
+                Falta marcar {pendingForms} {pendingForms === 1 ? "atividade" : "atividades"} do
+                Google Forms como respondida{pendingForms === 1 ? "" : "s"}.
+              </p>
+            )}
 
             <button
               type="button"

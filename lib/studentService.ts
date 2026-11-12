@@ -48,6 +48,11 @@ const profileCache = new Map<
 const inFlightProfilePromises = new Map<string, Promise<UserProfile | null>>();
 const PROFILE_CACHE_TTL = 60 * 1000;
 
+/** Conta de demonstração (sem login no Firebase). */
+function isDemoUserId(userId: string): boolean {
+  return userId === "demo-aluno-vl-001";
+}
+
 /**
  * Limpa o cache de progresso de um aluno ou de todos.
  */
@@ -373,6 +378,10 @@ export async function toggleLessonProgress(
   });
 
   // Grava no Cloud Firestore
+  // Aluno Demonstração não possui conta no Firebase: progresso fica só no navegador
+  if (isDemoUserId(userId)) {
+    return { updatedLessons: updatedList, isCourseCompleted };
+  }
   try {
     const progressDocRef = doc(db, "progress", `${userId}_${courseId}`);
     await setDoc(progressDocRef, payload, { merge: true });
@@ -394,7 +403,10 @@ export async function toggleLessonProgress(
       );
     }
   } catch (error) {
-    console.warn("Aviso: Progresso salvo localmente, mas erro ao sincronizar no Firestore:", error);
+    // Não esconde a falha: o aluno precisa saber que o progresso NÃO foi salvo
+    clearProgressCache(userId);
+    console.error("Erro ao salvar progresso da aula no Firestore:", error);
+    throw error;
   }
 
   return { updatedLessons: updatedList, isCourseCompleted };
@@ -463,6 +475,10 @@ export async function toggleFormProgress(
   });
 
   // Salva no Firestore
+  // Aluno Demonstração não possui conta no Firebase: progresso fica só no navegador
+  if (isDemoUserId(userId)) {
+    return { updatedForms: updatedFormsList, isCourseCompleted };
+  }
   try {
     const progressDocRef = doc(db, "progress", `${userId}_${courseId}`);
     await setDoc(progressDocRef, payload, { merge: true });
@@ -483,7 +499,9 @@ export async function toggleFormProgress(
       );
     }
   } catch (error) {
-    console.warn("Aviso: Progresso de formulário salvo localmente, mas erro ao sincronizar no Firestore:", error);
+    clearProgressCache(userId);
+    console.error("Erro ao salvar atividade no Firestore:", error);
+    throw error;
   }
 
   return { updatedForms: updatedFormsList, isCourseCompleted };

@@ -259,6 +259,19 @@ export function getUserEnrolledCourseIds(user: UserProfile | null | undefined): 
 }
 
 /**
+ * Mantém só os IDs concluídos que ainda existem no curso.
+ * Evita progresso acima de 100% (ou certificado liberado antes da hora)
+ * quando o admin exclui ou troca aulas que o aluno já tinha concluído.
+ */
+export function filterExistingLessonIds(
+  lessons: { id: string }[] | undefined,
+  completedIds: string[] | undefined
+): string[] {
+  const existing = new Set((lessons || []).map((l) => l.id));
+  return Array.from(new Set(completedIds || [])).filter((id) => existing.has(id));
+}
+
+/**
  * Identifica se o usuário atual é uma conta de "Aluno Demonstração".
  * O Aluno Demonstração é uma conta com acesso limitado para conhecer a plataforma
  * e assistir ao vídeo de suporte, sem qualquer acesso aos vídeos das aulas dos cursos.
