@@ -7,8 +7,8 @@
  *
  * Cursos Iniciais:
  * 1. Programação Rockwell - Básico (ID: rockwell-basico) -> possui as aulas atuais
- * 2. Programação Rockwell - Intermediário (ID: rockwell-intermediario) -> preparado para receber aulas
- * 3. Programação Rockwell - Avançado (ID: rockwell-avancado) -> preparado para receber aulas
+ * 2. Controle de Saída e Entrada Analógica (ID: rControl-entrada-saida-analogica; antigo: rockwell-intermediario)
+ * 3. IHM e Supervisório (ID: IHM-supervisorio; antigo: rockwell-avancado)
  */
 
 import { Course, Lesson } from "./types";

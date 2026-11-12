@@ -13,7 +13,7 @@
 import React, { useState } from "react";
 import { Bell, ArrowRight } from "lucide-react";
 import { getStoredNotices, Notice } from "@/lib/constants";
-import { getUserAccessibleCourseIds } from "@/lib/courseService";
+import { getUserAccessibleCourseIds, normalizeCourseId } from "@/lib/courseService";
 import { UserProfile } from "@/lib/types";
 
 interface NoticesViewProps {
@@ -32,7 +32,7 @@ export function NoticesView({ user, onGoToCourse }: NoticesViewProps) {
 
   // Filtra apenas comunicados de cursos aos quais o aluno possui acesso oficial
   const studentNotices: Notice[] = allNotices.filter((notice) =>
-    accessibleCourseIds.includes(notice.courseId)
+    accessibleCourseIds.includes(normalizeCourseId(notice.courseId))
   );
 
   return (

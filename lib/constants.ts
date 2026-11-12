@@ -26,6 +26,9 @@ export const WHATSAPP_NUMBER = "5512996092249";
  */
 export const WHATSAPP_COURSE_MESSAGES: Record<string, string> = {
   "rockwell-basico": "Olá! Gostaria de obter acesso ao curso Programação Rockwell - Básico.",
+  "rControl-entrada-saida-analogica": "Olá! Gostaria de obter acesso ao curso Controle de Saída e Entrada Analógica.",
+  "IHM-supervisorio": "Olá! Gostaria de obter acesso ao curso IHM e Supervisório.",
+  // IDs antigos (compatibilidade)
   "rockwell-intermediario": "Olá! Gostaria de obter acesso ao curso Controle de Saída e Entrada Analógica.",
   "rockwell-avancado": "Olá! Gostaria de obter acesso ao curso IHM e Supervisório.",
 };
@@ -34,7 +37,7 @@ export const WHATSAPP_COURSE_MESSAGES: Record<string, string> = {
  * Gera a URL oficial da API do WhatsApp (`https://wa.me/...`)
  * com o número oficial configurado e o texto da mensagem codificado em URI.
  * 
- * @param courseId Identificador do curso (ex: "rockwell-intermediario")
+ * @param courseId Identificador do curso (ex: "rControl-entrada-saida-analogica")
  * @returns Link seguro para abertura direta no aplicativo do WhatsApp ou WhatsApp Web
  */
 export function getCourseWhatsAppUrl(courseId: string): string {
@@ -77,14 +80,14 @@ export const PLATFORM_NOTICES: Notice[] = [
   },
   {
     id: "aviso-intermediario-preparacao",
-    courseId: "rockwell-intermediario",
+    courseId: "rControl-entrada-saida-analogica",
     title: "Conteúdo Técnico em Produção",
     message: "Novos módulos práticos de instruções AOI e parametrização PowerFlex sendo adicionados.",
     date: "Recentemente",
   },
   {
     id: "aviso-avancado-scada",
-    courseId: "rockwell-avancado",
+    courseId: "IHM-supervisorio",
     title: "Módulos de Supervisório SCADA",
     message: "Telas de exemplo no FactoryTalk View SE/ME em fase final de testes práticos.",
     date: "Recentemente",

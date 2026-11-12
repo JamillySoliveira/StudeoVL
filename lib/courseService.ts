@@ -25,6 +25,8 @@ import {
   updateDoc,
   deleteDoc,
   collection,
+  query,
+  where,
 } from "./firebase";
 
 import { Course, Lesson, Module, UserProfile } from "./types";
@@ -177,23 +179,47 @@ function setLocalLessonsOverride(
 }
 
 /**
- * Normaliza o ID do curso para manter total compatibilidade com dados legados.
+ * IDs antigos/alternativos de curso -> ID oficial do curso (AVAILABLE_COURSES).
+ *
+ * Os cursos 2 e 3 foram renomeados, mas partes do sistema (matrículas, avisos)
+ * ainda usavam os IDs antigos "rockwell-intermediario" e "rockwell-avancado".
+ * Isso impedia o aluno matriculado de acessar esses cursos. Todos os IDs
+ * abaixo continuam aceitos e são convertidos para o ID oficial.
+ */
+export const COURSE_ID_ALIASES: Record<string, string> = {
+  "rockwell-controle-analogico-supervisorio": "rockwell-basico",
+  "rockwell-intermediario": "rControl-entrada-saida-analogica",
+  "rockwell-avancado": "IHM-supervisorio",
+};
+
+/**
+ * Normaliza o ID do curso para o ID oficial, mantendo compatibilidade com dados legados.
  */
 export function normalizeCourseId(courseId?: string): string {
   if (!courseId) return INITIAL_COURSE_ID;
-  if (courseId === "rockwell-controle-analogico-supervisorio") {
-    return "rockwell-basico";
-  }
-  return courseId;
+  return COURSE_ID_ALIASES[courseId] || courseId;
 }
 
 /**
- * Determina quais cursos estão liberados para o aluno visualizar.
- * 
+ * Todos os IDs (oficial + antigos) que representam o mesmo curso.
+ * Usado nas consultas ao Firestore, pois aulas antigas podem estar gravadas com o ID antigo.
+ */
+export function getCourseIdVariants(courseId: string): string[] {
+  const official = normalizeCourseId(courseId);
+  const legacy = Object.keys(COURSE_ID_ALIASES).filter(
+    (alias) => COURSE_ID_ALIASES[alias] === official
+  );
+  return [official, ...legacy];
+}
+
+/**
+ * Determina quais cursos estão liberados para o aluno visualizar (IDs oficiais).
+ *
  * Regras de Acesso:
  * - Se accessEnabled === false, o usuário não acessa nenhum curso.
  * - Administradores (role === "admin") possuem acesso liberado a todos os cursos.
- * - Alunos regulares acessam apenas os cursos listados no array `enrolledCourses` do seu perfil no Firestore.
+ * - Alunos regulares acessam os cursos listados em `enrolledCourses` ou marcados
+ *   como true em `courseAccess` (IDs oficiais ou antigos).
  */
 export function getUserAccessibleCourseIds(user: UserProfile | null): string[] {
   if (!user) return [];
@@ -206,35 +232,30 @@ export function getUserAccessibleCourseIds(user: UserProfile | null): string[] {
     return AVAILABLE_COURSES.map((c) => c.id);
   }
 
+  const granted = new Set<string>();
   const enrolled = Array.isArray(user.enrolledCourses) ? user.enrolledCourses : [];
-  const accessible: string[] = [];
+  enrolled.forEach((id) => granted.add(normalizeCourseId(id)));
+  Object.entries(user.courseAccess || {}).forEach(([id, allowed]) => {
+    if (allowed === true) granted.add(normalizeCourseId(id));
+  });
 
-  // Verifica cada curso liberado no perfil do aluno (suporte a enrolledCourses e courseAccess)
-  const hasRockwellBasico =
-    enrolled.includes("rockwell-basico") ||
-    enrolled.includes("rockwell-controle-analogico-supervisorio") ||
-    user.courseAccess?.["rockwell-controle-analogico-supervisorio"] === true ||
-    user.courseAccess?.["rockwell-basico"] === true;
+  // Mantém a ordem oficial dos cursos e ignora IDs desconhecidos
+  return AVAILABLE_COURSES.map((c) => c.id).filter((id) => granted.has(id));
+}
 
-  if (hasRockwellBasico) {
-    accessible.push("rockwell-basico");
-  }
-
-  if (
-    enrolled.includes("rockwell-intermediario") ||
-    user.courseAccess?.["rockwell-intermediario"] === true
-  ) {
-    accessible.push("rockwell-intermediario");
-  }
-
-  if (
-    enrolled.includes("rockwell-avancado") ||
-    user.courseAccess?.["rockwell-avancado"] === true
-  ) {
-    accessible.push("rockwell-avancado");
-  }
-
-  return accessible;
+/**
+ * Converte a lista de matrículas de um aluno para IDs oficiais (sem duplicados).
+ */
+export function getUserEnrolledCourseIds(user: UserProfile | null | undefined): string[] {
+  if (!user) return [];
+  const granted = new Set<string>();
+  (Array.isArray(user.enrolledCourses) ? user.enrolledCourses : []).forEach((id) =>
+    granted.add(normalizeCourseId(id))
+  );
+  Object.entries(user.courseAccess || {}).forEach(([id, allowed]) => {
+    if (allowed === true) granted.add(normalizeCourseId(id));
+  });
+  return AVAILABLE_COURSES.map((c) => c.id).filter((id) => granted.has(id));
 }
 
 /**
@@ -580,18 +601,110 @@ export async function getCourseData(
 }
 
 /**
+ * IDs de curso (como gravados no campo courseId do Firestore) que o usuário pode ler.
+ *
+ * - Admin: retorna null (sem restrição, lê todos os cursos).
+ * - Aluno: somente os cursos liberados em enrolledCourses/courseAccess,
+ *   incluindo os IDs antigos de cada curso.
+ *
+ * As regras do Firestore aplicam exatamente a mesma restrição, por isso as
+ * consultas do aluno precisam ser filtradas por courseId (senão são negadas).
+ */
+export function getReadableCourseIds(user: UserProfile | null | undefined): string[] | null {
+  if (!user) return [];
+  if (user.role === "admin" && !isDemoUser(user)) return null;
+  if (isDemoUser(user)) return [];
+
+  // Inclui os IDs antigos, pois aulas antigas podem estar gravadas com eles
+  return getUserAccessibleCourseIds(user).flatMap((id) => getCourseIdVariants(id));
+}
+
+type SimpleDoc = { id: string; data: () => any };
+
+/**
+ * Busca as coleções necessárias no Firestore.
+ * - readableIds === null (admin): lê as coleções inteiras.
+ * - readableIds = lista (aluno): lê somente as aulas/módulos/cursos liberados.
+ * Retorna null em cada posição cuja leitura falhou.
+ */
+async function fetchCourseCollections(readableIds: string[] | null): Promise<{
+  deletedDocs: SimpleDoc[] | null;
+  lessonDocs: SimpleDoc[] | null;
+  moduleDocs: SimpleDoc[] | null;
+  courseDocs: SimpleDoc[] | null;
+}> {
+  const logAndNull = (label: string) => (err: unknown) => {
+    console.error(`Erro ao ler "${label}" no Firestore:`, err);
+    return null;
+  };
+
+  if (readableIds === null) {
+    const [d, l, m, c] = await Promise.all([
+      getDocs(collection(db, "deletedLessons")).catch(logAndNull("deletedLessons")),
+      getDocs(collection(db, "lessons")).catch(logAndNull("lessons")),
+      getDocs(collection(db, "modules")).catch(logAndNull("modules")),
+      getDocs(collection(db, "courses")).catch(logAndNull("courses")),
+    ]);
+    return {
+      deletedDocs: d ? d.docs : null,
+      lessonDocs: l ? l.docs : null,
+      moduleDocs: m ? m.docs : null,
+      courseDocs: c ? c.docs : null,
+    };
+  }
+
+  // Aluno sem nenhum curso liberado: nada para buscar
+  if (readableIds.length === 0) {
+    return { deletedDocs: [], lessonDocs: [], moduleDocs: [], courseDocs: [] };
+  }
+
+  const normalizedIds = Array.from(new Set(readableIds.map((id) => normalizeCourseId(id))));
+
+  const [d, l, m, c] = await Promise.all([
+    getDocs(collection(db, "deletedLessons")).catch(logAndNull("deletedLessons")),
+    getDocs(query(collection(db, "lessons"), where("courseId", "in", readableIds))).catch(
+      logAndNull("lessons")
+    ),
+    getDocs(query(collection(db, "modules"), where("courseId", "in", readableIds))).catch(
+      logAndNull("modules")
+    ),
+    Promise.all(
+      normalizedIds.map((id) =>
+        getDoc(doc(db, "courses", id)).catch(logAndNull(`courses/${id}`))
+      )
+    ),
+  ]);
+
+  return {
+    deletedDocs: d ? d.docs : null,
+    lessonDocs: l ? l.docs : null,
+    moduleDocs: m ? m.docs : null,
+    courseDocs: c
+      .filter((snap): snap is NonNullable<typeof snap> => Boolean(snap && snap.exists()))
+      .map((snap) => ({ id: snap.id, data: () => snap.data() })),
+  };
+}
+
+/**
  * Retorna todos os cursos disponíveis com suas aulas atualizadas exclusivamente do Firestore.
- * Executa uma consulta em lote às coleções do Firestore para alta performance.
+ *
+ * Se `user` for informado e não for admin, somente os cursos liberados para ele
+ * são buscados; os demais aparecem sem aulas (bloqueados).
  */
 export async function getAllCourses(
   user?: UserProfile | null
 ): Promise<Course[]> {
-  // 1. Verifica se todos os cursos disponíveis já estão no cache em memória
+  const readableIds = user ? getReadableCourseIds(user) : null;
+  const isRestricted = readableIds !== null;
+
+  // 1. Cache em memória (somente para a visão completa do admin)
   const now = Date.now();
-  const allCached = AVAILABLE_COURSES.every((c) => {
-    const cached = courseCache.get(c.id);
-    return cached && now - cached.timestamp < COURSE_CACHE_TTL;
-  });
+  const allCached =
+    !isRestricted &&
+    AVAILABLE_COURSES.every((c) => {
+      const cached = courseCache.get(c.id);
+      return cached && now - cached.timestamp < COURSE_CACHE_TTL;
+    });
 
   if (allCached) {
     const list = AVAILABLE_COURSES.map((c) => courseCache.get(c.id)!.data);
@@ -599,28 +712,22 @@ export async function getAllCourses(
   }
 
   // 2. Se já houver uma busca global em lote em andamento, compartilha a promessa
-  if (inFlightAllCourses) {
+  if (!isRestricted && inFlightAllCourses) {
     const res = await inFlightAllCourses;
     return isDemoUser(user) ? sanitizeCoursesForUser(res, user) : res;
   }
 
   // 3. Busca consolidada em lote diretamente no Cloud Firestore
-  inFlightAllCourses = (async (): Promise<Course[]> => {
+  const fetchPromise = (async (): Promise<Course[]> => {
     const localDeleted = getLocalDeletedLessons();
     const deletedLessonIds = new Set<string>(localDeleted);
 
     try {
-      // Executa apenas 4 consultas paralelas de coleção (evitando múltiplas chamadas individuais de getDoc por curso)
-      const [deletedSnapshot, lessonsSnapshot, modulesSnapshot, coursesSnapshot] =
-        await Promise.all([
-          getDocs(collection(db, "deletedLessons")).catch(() => null),
-          getDocs(collection(db, "lessons")).catch(() => null),
-          getDocs(collection(db, "modules")).catch(() => null),
-          getDocs(collection(db, "courses")).catch(() => null),
-        ]);
+      const { deletedDocs, lessonDocs, moduleDocs, courseDocs } =
+        await fetchCourseCollections(readableIds);
 
-      if (deletedSnapshot) {
-        deletedSnapshot.docs.forEach((dDoc) => {
+      if (deletedDocs) {
+        deletedDocs.forEach((dDoc) => {
           const data = dDoc.data();
           const dId = dDoc.id || data.id;
           deletedLessonIds.add(dId);
@@ -630,8 +737,8 @@ export async function getAllCourses(
 
       // Mapeia todas as aulas de todos os cursos que existem no Firestore
       const allFirestoreLessons: Lesson[] = [];
-      if (lessonsSnapshot) {
-        lessonsSnapshot.docs.forEach((item) => {
+      if (lessonDocs) {
+        lessonDocs.forEach((item) => {
           const data = item.data() as Lesson;
           const lId = item.id || data.id;
           if (deletedLessonIds.has(lId)) return;
@@ -647,8 +754,8 @@ export async function getAllCourses(
       }
 
       const allFirestoreModules: Module[] = [];
-      if (modulesSnapshot) {
-        modulesSnapshot.docs.forEach((mDoc) => {
+      if (moduleDocs) {
+        moduleDocs.forEach((mDoc) => {
           const mData = mDoc.data() as Module;
           const mCourseId = normalizeCourseId(mData.courseId);
           allFirestoreModules.push({
@@ -677,11 +784,13 @@ export async function getAllCourses(
       }
 
       const coursesMapData = new Map<string, Partial<Course>>();
-      if (coursesSnapshot) {
-        coursesSnapshot.docs.forEach((docSnap) => {
+      if (courseDocs) {
+        courseDocs.forEach((docSnap) => {
           coursesMapData.set(docSnap.id, docSnap.data() as Partial<Course>);
         });
       }
+
+      const fetchOk = lessonDocs !== null && moduleDocs !== null && courseDocs !== null;
 
       const assembledCourses: Course[] = AVAILABLE_COURSES.map((c) => {
         const cCourseId = c.id;
@@ -701,8 +810,8 @@ export async function getAllCourses(
           relevantModules
         );
 
-        // Apenas armazena no cache se a consulta do Firestore ocorreu com sucesso sem erros (nunca armazena erro)
-        if (lessonsSnapshot !== null && modulesSnapshot !== null && coursesSnapshot !== null) {
+        // Cache apenas da visão completa (admin) e somente se a leitura ocorreu sem erros
+        if (!isRestricted && fetchOk) {
           courseCache.set(cCourseId, {
             data: built,
             timestamp: Date.now(),
@@ -721,11 +830,15 @@ export async function getAllCourses(
         modules: [],
       }));
     }
-  })().finally(() => {
-    inFlightAllCourses = null;
-  });
+  })();
 
-  const allResult = await inFlightAllCourses;
+  if (!isRestricted) {
+    inFlightAllCourses = fetchPromise.finally(() => {
+      inFlightAllCourses = null;
+    });
+  }
+
+  const allResult = await fetchPromise;
   return isDemoUser(user) ? sanitizeCoursesForUser(allResult, user) : allResult;
 }
 
@@ -762,7 +875,8 @@ export async function saveLessonVideoUrl(
       { merge: true }
     );
   } catch (error) {
-    console.warn("Aviso ao salvar link de vídeo no Firestore:", error);
+    console.error("Erro ao salvar link de vídeo no Firestore:", error);
+    throw error;
   }
 }
 
@@ -794,7 +908,8 @@ export async function updateLessonDetails(
       { merge: true }
     );
   } catch (error) {
-    console.warn("Aviso ao salvar detalhes da aula no Firestore:", error);
+    console.error("Erro ao salvar detalhes da aula no Firestore:", error);
+    throw error;
   }
 }
 
@@ -896,7 +1011,8 @@ export async function deleteLesson(
     const lessonRef = doc(db, "lessons", lessonId);
     await deleteDoc(lessonRef);
   } catch (error) {
-    console.warn("Aviso ao remover da coleção lessons:", error);
+    console.error("Erro ao remover a aula da coleção lessons:", error);
+    throw error;
   }
 
   // 3. Registra o ID da aula na coleção 'deletedLessons' do Firestore para persistência definitiva
@@ -965,7 +1081,10 @@ export async function saveCourseCertificate(
     const courseRef = doc(db, "courses", effectiveCourseId);
     await setDoc(courseRef, payload, { merge: true });
   } catch (error) {
-    console.warn("Aviso ao salvar certificado no Firestore:", error);
+    // Desfaz o cache local para não exibir um certificado que não foi salvo
+    setLocalCourseCertificate(effectiveCourseId, null);
+    console.error("Erro ao salvar certificado no Firestore:", error);
+    throw error;
   }
 }
 
@@ -991,7 +1110,8 @@ export async function removeCourseCertificate(courseId: string): Promise<void> {
       { merge: true }
     );
   } catch (error) {
-    console.warn("Aviso ao remover certificado do Firestore:", error);
+    console.error("Erro ao remover certificado do Firestore:", error);
+    throw error;
   }
 }
 
@@ -1048,17 +1168,23 @@ export async function updateUserEnrolledCourses(
   enrolledCourses: string[]
 ): Promise<void> {
   clearUserProfileCache(userId);
+
+  // Grava sempre os IDs oficiais dos cursos
+  const officialIds = Array.from(new Set(enrolledCourses.map((id) => normalizeCourseId(id))));
+
+  // courseAccess: um booleano por curso (IDs oficiais e antigos, para compatibilidade)
+  const courseAccess: Record<string, boolean> = {};
+  AVAILABLE_COURSES.forEach((c) => {
+    getCourseIdVariants(c.id).forEach((variant) => {
+      courseAccess[variant] = officialIds.includes(c.id);
+    });
+  });
+
   try {
     const userRef = doc(db, "users", userId);
     await updateDoc(userRef, {
-      enrolledCourses,
-      courseAccess: {
-        "rockwell-controle-analogico-supervisorio":
-          enrolledCourses.includes("rockwell-basico") ||
-          enrolledCourses.includes("rockwell-controle-analogico-supervisorio"),
-        "rockwell-intermediario": enrolledCourses.includes("rockwell-intermediario"),
-        "rockwell-avancado": enrolledCourses.includes("rockwell-avancado"),
-      },
+      enrolledCourses: officialIds,
+      courseAccess,
       updatedAt: new Date().toISOString(),
     });
   } catch (error) {
